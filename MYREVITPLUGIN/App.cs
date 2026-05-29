@@ -13,7 +13,7 @@ using System.Windows.Media.Imaging;
 
 namespace MYREVITPLUGIN
 {
-    public class Class1 : IExternalApplication
+    public class App : IExternalApplication
     {
         public Result OnStartup(UIControlledApplication application)
         {
@@ -25,7 +25,7 @@ namespace MYREVITPLUGIN
             string logoLargePath = System.IO.Path.Combine(assemblyDirectory, "logo_large.png");
             string logoSmallPath = System.IO.Path.Combine(assemblyDirectory, "logo_small.png");
 
-            PushButtonData buttonData = new PushButtonData("cmdExportarVistas", "Exportador\nde Vistas", thisAssemblyPath, "MYREVITPLUGIN.MyTest");
+            PushButtonData buttonData = new PushButtonData("cmdExportarVistas", "Exportador\nde Vistas", thisAssemblyPath, "MYREVITPLUGIN.ExportCommand");
             PushButton pushButton = ribbonPanel.AddItem(buttonData) as PushButton;
 
             pushButton.ToolTip = "Exportador de Planos MI";
@@ -68,7 +68,7 @@ namespace MYREVITPLUGIN
     }
 
     [Transaction(TransactionMode.Manual)]
-    public class MyTest : IExternalCommand
+    public class ExportCommand : IExternalCommand
     {
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {

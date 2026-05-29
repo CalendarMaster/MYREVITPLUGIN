@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-	<Name>MI-Exportador de Vistas</Name>
-	<FullClassName>MYREVITPLUGIN.Class1</FullClassName>
+	<Name>MI-Plugin</Name>
+	<FullClassName>MYREVITPLUGIN.App</FullClassName>
 	<Assembly>D:\Design Technologist\PROYECTOS\T0014 - PLUGIN RVT\MYREVITPLUGIN\MYREVITPLUGIN\bin\Debug\MYREVITPLUGIN.dll</Assembly>
 	<AddInId>358379E5-76A1-4F6C-A968-7ADE6025EED9</AddInId>
 	<VendorId>MISTUDIO</VendorId>
