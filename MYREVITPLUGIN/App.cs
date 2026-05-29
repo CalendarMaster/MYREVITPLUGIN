@@ -67,19 +67,5 @@ namespace MYREVITPLUGIN
         }
     }
 
-    [Transaction(TransactionMode.Manual)]
-    public class ExportCommand : IExternalCommand
-    {
-        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
-        {
-            var uiapp = commandData.Application;
-            var app = uiapp.Application;
-            var uidoc = uiapp.ActiveUIDocument;
-            var doc = uidoc.Document;
 
-            TaskDialog.Show("M.I. Studio - Exportador de Vistas", "Bienvenido al exportador de planos automatizado de M.I. Studio\n\nEsta herramienta te permitirá exportar tus vistas de Revit de manera rápida y eficiente.");
-
-            return Result.Succeeded;
-        }
-    }
 }
