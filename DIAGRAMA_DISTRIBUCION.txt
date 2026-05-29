@@ -1,0 +1,213 @@
+╔═══════════════════════════════════════════════════════════════════════╗
+║                                                                       ║
+║    DISTRIBUCIÓN DEL PLUGIN - MI EXPORTADOR DE VISTAS                  ║
+║    Guía paso a paso visual                                            ║
+║                                                                       ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+
+📊 PROCESO VISUAL DE DISTRIBUCIÓN
+═══════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────┐
+│   TÚ (Desarrollador)        │
+│   - Compilaste el plugin ✓  │
+│   - Tienes todo listo ✓     │
+└──────────────┬──────────────┘
+			   │
+			   ▼
+┌─────────────────────────────────────────────────┐
+│ CARPETA: MI-ExportadorVistas-Distribucion       │
+│                                                 │
+│ ├── INSTALAR.ps1 (Script automático)           │
+│ ├── README.txt (Instrucciones)                 │
+│ └── bin/                                        │
+│     ├── MYREVITPLUGIN.dll                      │
+│     ├── MYREVITPLUGIN.dll.config               │
+│     ├── logo_large.png                         │
+│     └── logo_small.png                         │
+│                                                 │
+│ 📦 Tamaño: 0.02 MB (SÚPER PEQUEÑO)             │
+└──────────────┬──────────────────────────────────┘
+			   │
+	┌──────────┴──────────┬──────────┐
+	│                     │          │
+	▼                     ▼          ▼
+[Email]            [Google Drive]  [Drive Local]
+ (ZIP)             (Carpeta)        (Compartido)
+
+
+📋 FLUJO PARA TU COMPAÑERO
+═══════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────┐
+│ 1. RECIBE LA CARPETA        │
+│    (Email, Drive, etc.)     │
+└──────────────┬──────────────┘
+			   │
+			   ▼
+┌─────────────────────────────┐
+│ 2. DESCOMPRIME EL ZIP       │
+│    (Si recibió ZIP)         │
+└──────────────┬──────────────┘
+			   │
+			   ▼
+┌─────────────────────────────────────────┐
+│ 3. CLICK DERECHO EN INSTALAR.PS1        │
+│    Selecciona:                          │
+│    "Ejecutar con PowerShell"            │
+└──────────────┬──────────────────────────┘
+			   │
+			   ▼ (Script automático)
+┌─────────────────────────────────────────┐
+│ 4. SCRIPT SE EJECUTA                    │
+│    - Detecta Revit                      │
+│    - Copia archivos                     │
+│    - Configura todo                     │
+│    - Presiona Enter                     │
+└──────────────┬──────────────────────────┘
+			   │
+			   ▼
+┌─────────────────────────────────────────┐
+│ 5. ABRE REVIT 2025                      │
+│    (Cerrar completamente si está abierto) │
+└──────────────┬──────────────────────────┘
+			   │
+			   ▼
+┌─────────────────────────────────────────┐
+│ 6. VA A: Add-Ins (Complementos)         │
+│    Busca: Panel "M.I. Studio"           │
+│    Hace clic en: "Exportador de Vistas" │
+└──────────────┬──────────────────────────┘
+			   │
+			   ▼
+┌─────────────────────────────────────────┐
+│ ✅ ¡LISTO!                              │
+│    El plugin funciona perfectamente     │
+└─────────────────────────────────────────┘
+
+
+🎯 MÉTODOS DE DISTRIBUCIÓN RECOMENDADOS
+═══════════════════════════════════════════════════════════════════════
+
+┌──────────────────────────────────────────────────────┐
+│ 1️⃣  OPCIÓN MÁS SIMPLE: ZIP POR EMAIL                │
+├──────────────────────────────────────────────────────┤
+│ ✓ Comprime la carpeta                               │
+│ ✓ Envía por email                                   │
+│ ✓ Tu compañero descarga y ejecuta INSTALAR.ps1     │
+│                                                      │
+│ Ventaja: Rápido y simple                            │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│ 2️⃣  OPCIÓN MODERNA: GOOGLE DRIVE / ONEDRIVE        │
+├──────────────────────────────────────────────────────┤
+│ ✓ Sube la carpeta a la nube                         │
+│ ✓ Comparte el link                                  │
+│ ✓ Tu compañero descarga y ejecuta INSTALAR.ps1     │
+│                                                      │
+│ Ventaja: Acceso rápido, control de versiones       │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│ 3️⃣  OPCIÓN EMPRESARIAL: SERVIDOR COMPARTIDO         │
+├──────────────────────────────────────────────────────┤
+│ ✓ Coloca la carpeta en servidor de la empresa      │
+│ ✓ Compañeros acceden directo                        │
+│ ✓ Ejecutan INSTALAR.ps1                            │
+│                                                      │
+│ Ventaja: Centralizado, fácil mantenimiento         │
+└──────────────────────────────────────────────────────┘
+
+
+⚠️  SOLUCIÓN DE PROBLEMAS COMUNES
+═══════════════════════════════════════════════════════════════════════
+
+PROBLEMA: "No puedo ejecutar PowerShell"
+───────────────────────────────────────
+Solución:
+  1. Click derecho en PowerShell → "Ejecutar como administrador"
+  2. Navega a la carpeta del plugin
+  3. Ejecuta: powershell -ExecutionPolicy Bypass -File INSTALAR.ps1
+
+PROBLEMA: "El plugin no aparece en Revit"
+─────────────────────────────────────────
+Solución:
+  1. Cierra Revit completamente
+  2. Vuelve a abrir Revit
+  3. Si aún no aparece:
+	 → Manage → Add-Ins → Manage Add-Ins
+	 → Busca "MI-Exportador de Vistas"
+	 → Verifica si hay error
+
+PROBLEMA: "Error de permisos al copiar archivos"
+────────────────────────────────────────────────
+Solución:
+  1. Ejecuta PowerShell como administrador
+  2. Cierra Revit completamente
+  3. Vuelve a ejecutar el script
+
+PROBLEMA: "Script no se ejecuta"
+───────────────────────────────
+Solución:
+  Abre PowerShell y ejecuta:
+  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+
+📊 ARQUITECTURA DE ARCHIVOS
+═══════════════════════════════════════════════════════════════════════
+
+EN TU PC:
+────────
+D:\Design Technologist\PROYECTOS\T0014 - PLUGIN RVT\MYREVITPLUGIN\
+├── MYREVITPLUGIN\
+│   ├── bin\Debug\
+│   │   ├── MYREVITPLUGIN.dll
+│   │   ├── MYREVITPLUGIN.dll.config
+│   │   ├── logo_large.png
+│   │   └── logo_small.png
+│   └── Class1.cs
+├── INSTALAR.ps1
+├── README.txt
+└── MI-ExportadorVistas-Distribucion\
+	├── bin\
+	│   ├── MYREVITPLUGIN.dll
+	│   ├── MYREVITPLUGIN.dll.config
+	│   ├── logo_large.png
+	│   └── logo_small.png
+	├── INSTALAR.ps1
+	└── README.txt
+
+EN COMPUTADOR DE COMPAÑERO (Después del instalador):
+─────────────────────────────────────────────────────
+C:\Users\[CompañeroNombre]\AppData\Roaming\Autodesk\Revit\Addins\2025\
+├── MYREVITPLUGIN.dll
+├── MYREVITPLUGIN.dll.config
+├── MYREVITPLUGIN.addin ← Generado automáticamente
+├── logo_large.png
+└── logo_small.png
+
+
+✨ RESUMEN FINAL
+═══════════════════════════════════════════════════════════════════════
+
+Tu compañero necesita:
+  1. Descargar: MI-ExportadorVistas-Distribucion
+  2. Ejecutar: INSTALAR.ps1 (click derecho → PowerShell)
+  3. Abrir: Revit 2025
+  4. ¡Disfrutar! El plugin está listo
+
+El script maneja TODO automáticamente.
+No hay configuración manual.
+No hay rutas hardcodeadas.
+100% automático y seguro.
+
+═══════════════════════════════════════════════════════════════════════
+
+¿PREGUNTAS? Lee:
+  ✓ README.txt → Instrucciones detalladas
+  ✓ GUIA_DISTRIBUCION_FINAL.txt → Información técnica
+  ✓ DISTRIBUCION_PLUGIN.txt → Opciones completas
+
+═══════════════════════════════════════════════════════════════════════

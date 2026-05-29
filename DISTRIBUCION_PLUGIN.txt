@@ -1,0 +1,126 @@
+╔════════════════════════════════════════════════════════════════╗
+║     DISTRIBUIR PLUGIN A COMPAÑEROS - GUÍA COMPLETA              ║
+╚════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════
+ OPCIÓN 1: INSTALACIÓN MANUAL (MÁS SIMPLE)
+═══════════════════════════════════════════════════════════════════
+
+Si tienes 1-2 compañeros, es muy fácil:
+
+PASO 1: Prepara los archivos necesarios
+───────────────────────────────────────
+Crea una carpeta llamada "MI-ExportadorVistas" con:
+
+📁 MI-ExportadorVistas/
+├── 📄 INSTALAR.ps1 (script de instalación)
+├── 📄 README.txt (instrucciones)
+├── 📁 bin/
+│   ├── MYREVITPLUGIN.dll
+│   ├── MYREVITPLUGIN.dll.config
+│   ├── logo_large.png
+│   └── logo_small.png
+└── 📁 dependencias/ (opcional)
+	├── RevitAPI.dll
+	├── RevitAPIUI.dll
+	└── otros...
+
+PASO 2: Comparte la carpeta
+──────────────────────────
+Por email, Google Drive, OneDrive, etc.
+
+PASO 3: Compañero ejecuta INSTALAR.ps1
+──────────────────────────────────────
+Double-click en INSTALAR.ps1 → Enter → ¡Listo!
+
+═══════════════════════════════════════════════════════════════════
+ OPCIÓN 2: INSTALADOR EJECUTABLE (.EXE)
+═══════════════════════════════════════════════════════════════════
+
+Más profesional. Pasos:
+
+1. Descarga NSIS (Nullsoft Scriptable Install System) - GRATIS
+   https://nsis.sourceforge.io/
+
+2. Crea un script .nsi (te muestro plantilla abajo)
+
+3. Compila → Genera instalador .exe
+
+4. Compañeros solo dan double-click al .exe
+
+Ventajas:
+✓ Muy profesional
+✓ Automático
+✓ Desinstalar fácilmente
+✗ Más complejo de configurar
+
+═══════════════════════════════════════════════════════════════════
+ OPCIÓN 3: PACKAGE ZIP (RECOMENDADO PARA EMPEZAR)
+═══════════════════════════════════════════════════════════════════
+
+1. Comprime la carpeta MI-ExportadorVistas como .ZIP
+
+2. Envía a compañeros
+
+3. Compañero descomprime y ejecuta INSTALAR.ps1
+
+RECOMENDACIÓN: Empieza con esto, es simple y funciona perfecto.
+
+═══════════════════════════════════════════════════════════════════
+ PROBLEMAS COMUNES A EVITAR
+═══════════════════════════════════════════════════════════════════
+
+❌ NO: Copiar solo el DLL
+✓ SÍ: Copiar DLL + .config + imágenes + .addin
+
+❌ NO: Rutas hardcodeadas (específicas de tu PC)
+✓ SÍ: Rutas dinámicas que funcionan en cualquier PC
+
+❌ NO: Asumir que Revit está instalado en C:
+✓ SÍ: Detectar dónde está Revit
+
+═══════════════════════════════════════════════════════════════════
+ ARCHIVO .ADDIN - PROBLEMA IMPORTANTE
+═══════════════════════════════════════════════════════════════════
+
+Tu archivo .addin actual tiene una ruta HARDCODEADA:
+
+<Assembly>D:\Design Technologist\PROYECTOS\T0014 - PLUGIN RVT\...
+</Assembly>
+
+Eso NO funcionará en otro computador.
+
+SOLUCIÓN: El script de instalación debe modificar esa ruta
+para que sea correcta en la computadora de tu compañero.
+
+═══════════════════════════════════════════════════════════════════
+ RESUMEN RÁPIDO - LO QUE NECESITAS
+═══════════════════════════════════════════════════════════════════
+
+Para distribuir a compañeros, necesitas:
+
+1. 📦 MYREVITPLUGIN.dll
+   Ubicación: bin/Debug/MYREVITPLUGIN.dll
+
+2. ⚙️ MYREVITPLUGIN.dll.config
+   Ubicación: bin/Debug/MYREVITPLUGIN.dll.config
+
+3. 🖼️ logo_large.png
+   Ubicación: bin/Debug/logo_large.png
+
+4. 🖼️ logo_small.png
+   Ubicación: bin/Debug/logo_small.png
+
+5. 📄 MYREVITPLUGIN.addin (MODIFICADO - vea abajo)
+   Este archivo necesita ser generado dinámicamente
+
+6. 🔧 Script de instalación automática (PowerShell)
+
+═══════════════════════════════════════════════════════════════════
+
+¿Quieres que te cree el script de instalación automática? 
+Entonces tus compañeros solo tendrán que:
+  1. Descargar la carpeta
+  2. Ejecutar INSTALAR.ps1
+  3. ¡Listo!
+
