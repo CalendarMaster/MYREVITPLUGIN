@@ -25,6 +25,10 @@ namespace MYREVITPLUGIN
         private TextBlock _lblPaso2Info;
         private TextBlock _lblPaso2Resultado;
 
+        // Diagnóstico técnico
+        private Button _btnDiagnostico;
+        private string _lastDiagnosticInfo;
+
         // Paso 3
         private GroupBox _groupPaso3;
         private CheckBox _chkCrearParametro;
@@ -93,6 +97,11 @@ namespace MYREVITPLUGIN
             var btnPaso1 = MakeButton("Ejecutar Paso 1");
             btnPaso1.Click += BtnPaso1_Click;
             paso1Panel.Children.Add(btnPaso1);
+
+            _btnDiagnostico = MakeSmallButton("Diagnóstico");
+            _btnDiagnostico.IsEnabled = false;
+            _btnDiagnostico.Click += BtnDiagnostico_Click;
+            paso1Panel.Children.Add(_btnDiagnostico);
 
             root.Children.Add(MakeGroupBox("Paso 1 - Crear Lotes", paso1Panel));
 
@@ -189,6 +198,8 @@ namespace MYREVITPLUGIN
                 if (layers.Count > 0) { _cmbCapaLimites.SelectedIndex = 0; _cmbCapaTextos.SelectedIndex = 0; }
 
                 _lblDwgSeleccionado.Content = "DWG: " + (instance.Name ?? instance.Id.IntegerValue.ToString());
+                _lastDiagnosticInfo = string.Empty;
+                _btnDiagnostico.IsEnabled = false;
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException) { }
             catch (Exception ex) { ShowError("Error seleccionando DWG: " + ex.Message); }
@@ -222,12 +233,51 @@ namespace MYREVITPLUGIN
             _externalEvent.Raise();
         }
 
+        private void BtnDiagnostico_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(_lastDiagnosticInfo))
+            {
+                ShowError("No hay diagnóstico disponible todavía. Ejecute el Paso 1.");
+                return;
+            }
+
+            Window diagWindow = new Window
+            {
+                Title = "Loteo - Diagnóstico técnico",
+                Owner = this,
+                Width = 560,
+                Height = 620,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1E, 0x1E, 0x2E)),
+                Foreground = Brushes.White,
+                FontFamily = new FontFamily("Segoe UI")
+            };
+
+            var text = new System.Windows.Controls.TextBox
+            {
+                Text = _lastDiagnosticInfo,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Margin = new Thickness(12),
+                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x2A, 0x2A, 0x3C)),
+                Foreground = Brushes.White,
+                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7C, 0x3A, 0xED))
+            };
+
+            diagWindow.Content = text;
+            diagWindow.ShowDialog();
+        }
+
         // ── Callbacks desde el handler ────────────────────────────
 
         public void OnStep1Completed(LoteoStepResult result)
         {
             if (!result.Success) { ShowError(result.Message); return; }
             _lblPaso2Info.Text = "DirectShapes creados: " + result.TotalCount;
+            _lastDiagnosticInfo = result.DiagnosticInfo;
+            _btnDiagnostico.IsEnabled = !string.IsNullOrWhiteSpace(_lastDiagnosticInfo);
             _groupPaso2.IsEnabled = true;
         }
 
@@ -254,6 +304,22 @@ namespace MYREVITPLUGIN
                 Height = 32,
                 Margin = new Thickness(0, 0, 0, 8),
                 Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7C, 0x3A, 0xED)),
+                Foreground = Brushes.White,
+                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7C, 0x3A, 0xED))
+            };
+        }
+
+        private static Button MakeSmallButton(string text)
+        {
+            return new Button
+            {
+                Content = text,
+                Height = 22,
+                Width = 92,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                FontSize = 11,
+                Margin = new Thickness(0, 0, 0, 6),
+                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x3C, 0x3C, 0x55)),
                 Foreground = Brushes.White,
                 BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x7C, 0x3A, 0xED))
             };

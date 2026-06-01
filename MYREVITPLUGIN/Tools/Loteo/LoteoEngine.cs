@@ -26,6 +26,7 @@ namespace MYREVITPLUGIN
         public int TotalCount { get; set; }
         public int NamedCount { get; set; }
         public int UpdatedElements { get; set; }
+        public string DiagnosticInfo { get; set; }
     }
 
     public class LoteoExternalEventHandler : IExternalEventHandler
@@ -116,6 +117,7 @@ namespace MYREVITPLUGIN
     public class LoteoEngine
     {
         private const string ProjectParameterName = "ID-Lote";
+        private const string LotNameParameterName = "NOMBRE_LOTE";
         private const double LoteHeightFeet = 300.0;
 
         private readonly Dictionary<ElementId, string> _lotNamesByDirectShape = new Dictionary<ElementId, string>();
@@ -131,7 +133,12 @@ namespace MYREVITPLUGIN
         public List<string> GetLayersFromImport(Document doc, ImportInstance importInstance)
         {
             var layerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            GeometryElement geo = importInstance.get_Geometry(new Options());
+            Options options = new Options
+            {
+                IncludeNonVisibleObjects = true
+            };
+
+            GeometryElement geo = importInstance.get_Geometry(options);
 
             if (geo == null)
             {
@@ -140,7 +147,7 @@ namespace MYREVITPLUGIN
 
             foreach (GeometryObject obj in geo)
             {
-                CollectLayerNamesRecursive(doc, obj, layerNames);
+                CollectLayerNamesRecursive(doc, obj, layerNames, null);
             }
 
             return layerNames.OrderBy(x => x).ToList();
@@ -162,7 +169,12 @@ namespace MYREVITPLUGIN
                 return Fail("El DWG seleccionado no es válido o ya no existe.");
             }
 
-            GeometryElement geo = import.get_Geometry(new Options());
+            Options geometryOptions = new Options
+            {
+                IncludeNonVisibleObjects = true
+            };
+
+            GeometryElement geo = import.get_Geometry(geometryOptions);
             if (geo == null)
             {
                 return Fail("No se pudo leer la geometría del DWG linkeado.");
@@ -171,51 +183,120 @@ namespace MYREVITPLUGIN
             Transform transform = import.GetTransform();
 
             int created = 0;
+            int totalPolylinesDetected = 0;
+            int selectedLayerCandidates = 0;
+            int discardedInvalidLoop = 0;
+            int discardedInvalidSolid = 0;
+            var polylinesByLayer = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
             _lotNamesByDirectShape.Clear();
             _lotSolidCache.Clear();
+
+            var allPolylines = new List<PolylineWithLayer>();
+            foreach (GeometryObject obj in geo)
+            {
+                allPolylines.AddRange(CollectPolylinesFromGeometry(doc, obj, null, null));
+            }
+
+            foreach (var item in allPolylines)
+            {
+                totalPolylinesDetected++;
+                if (!polylinesByLayer.ContainsKey(item.Layer))
+                {
+                    polylinesByLayer[item.Layer] = 0;
+                }
+
+                polylinesByLayer[item.Layer]++;
+            }
 
             using (Transaction tx = new Transaction(doc, "Paso 1 - Crear lotes DirectShape"))
             {
                 tx.Start();
 
-                foreach (GeometryObject obj in geo)
+                EnsureProjectParameter(doc, LotNameParameterName);
+
+                foreach (var item in allPolylines)
                 {
-                    foreach (PolyLine polyline in CollectPolylinesFromGeometry(doc, obj, limitsLayer))
+                    if (!item.Layer.Equals(limitsLayer, StringComparison.OrdinalIgnoreCase))
                     {
-                        CurveLoop loop = BuildClosedCurveLoopFromPolyline(polyline, transform);
-                        if (loop == null)
-                        {
-                            continue;
-                        }
+                        continue;
+                    }
+
+                    selectedLayerCandidates++;
+
+                    CurveLoop loop = BuildClosedCurveLoopFromPolyline(item.Polyline, transform);
+                    if (loop == null)
+                    {
+                        discardedInvalidLoop++;
+                        continue;
+                    }
+
+                    try
+                    {
+                        IList<CurveLoop> loops = new List<CurveLoop> { loop };
+                        Solid solid = null;
 
                         try
                         {
-                            IList<CurveLoop> loops = new List<CurveLoop> { loop };
-                            Solid solid = GeometryCreationUtilities.CreateExtrusionGeometry(loops, XYZ.BasisZ, LoteHeightFeet);
-
-                            DirectShape ds = DirectShape.CreateElement(doc, new ElementId(BuiltInCategory.OST_GenericModel));
-                            ds.Name = "Lote_sin_nombre";
-                            ds.SetShape(new GeometryObject[] { solid });
-
-                            _lotNamesByDirectShape[ds.Id] = string.Empty;
-                            _lotSolidCache[ds.Id] = solid;
-                            created++;
+                            solid = GeometryCreationUtilities.CreateExtrusionGeometry(loops, XYZ.BasisZ, LoteHeightFeet);
                         }
                         catch
                         {
-                            // Omite geometría inválida puntual
+                            // Algunos loops válidos geométricamente fallan por orientación; se reintenta invertido.
+                            CurveLoop inverted = CurveLoop.CreateViaOffset(loop, 0.0, XYZ.BasisZ.Negate());
+                            solid = GeometryCreationUtilities.CreateExtrusionGeometry(new List<CurveLoop> { inverted }, XYZ.BasisZ, LoteHeightFeet);
                         }
+
+                        DirectShape ds = DirectShape.CreateElement(doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                        ds.Name = "Lote_sin_nombre";
+                        ds.SetShape(new GeometryObject[] { solid });
+
+                        Parameter loteNameParam = ds.LookupParameter(LotNameParameterName);
+                        if (loteNameParam != null && !loteNameParam.IsReadOnly)
+                        {
+                            loteNameParam.Set(string.Empty);
+                        }
+
+                        _lotNamesByDirectShape[ds.Id] = string.Empty;
+                        _lotSolidCache[ds.Id] = solid;
+                        created++;
+                    }
+                    catch
+                    {
+                        discardedInvalidSolid++;
                     }
                 }
 
                 tx.Commit();
             }
 
+            var orderedLayers = polylinesByLayer
+                .OrderByDescending(x => x.Value)
+                .ThenBy(x => x.Key)
+                .ToList();
+
+            string layerDetail = orderedLayers.Count == 0
+                ? "(sin capas detectadas)"
+                : string.Join(Environment.NewLine, orderedLayers.Select(x => "- " + x.Key + ": " + x.Value));
+
+            string diagnostics =
+                "[Diagnóstico técnico - Paso 1]" + Environment.NewLine +
+                "Capa de límites seleccionada: " + limitsLayer + Environment.NewLine +
+                "Total de polylines detectadas en DWG: " + totalPolylinesDetected + Environment.NewLine +
+                "Polylines candidatas en capa seleccionada: " + selectedLayerCandidates + Environment.NewLine +
+                "Descartadas por loop inválido: " + discardedInvalidLoop + Environment.NewLine +
+                "Descartadas por error al crear sólido: " + discardedInvalidSolid + Environment.NewLine +
+                "DirectShapes creados: " + created + Environment.NewLine +
+                Environment.NewLine +
+                "Polylines detectadas por capa:" + Environment.NewLine +
+                layerDetail;
+
             return new LoteoStepResult
             {
                 Success = true,
                 Message = "Paso 1 completado.",
-                TotalCount = created
+                TotalCount = created,
+                DiagnosticInfo = diagnostics
             };
         }
 
@@ -240,7 +321,7 @@ namespace MYREVITPLUGIN
                 return Fail("No se encontró el DWG seleccionado.");
             }
 
-            string dwgPath = GetDwgAbsolutePath(import);
+            string dwgPath = GetDwgAbsolutePath(doc, import);
             if (string.IsNullOrWhiteSpace(dwgPath) || !File.Exists(dwgPath))
             {
                 return Fail("No se pudo obtener la ruta del DWG original en disco.");
@@ -278,6 +359,13 @@ namespace MYREVITPLUGIN
                         if (IsPointInsideSolidApprox(solid, textItem.Point))
                         {
                             ds.Name = textItem.Value;
+
+                            Parameter loteNameParam = ds.LookupParameter(LotNameParameterName);
+                            if (loteNameParam != null && !loteNameParam.IsReadOnly)
+                            {
+                                loteNameParam.Set(textItem.Value);
+                            }
+
                             _lotNamesByDirectShape[pair.Key] = textItem.Value;
                             named++;
                             break;
@@ -393,12 +481,12 @@ namespace MYREVITPLUGIN
             };
         }
 
-        private static void CollectLayerNamesRecursive(Document doc, GeometryObject obj, HashSet<string> layerNames)
+        private static void CollectLayerNamesRecursive(Document doc, GeometryObject obj, HashSet<string> layerNames, string inheritedLayer)
         {
-            string layer = GetLayerName(doc, obj);
-            if (!string.IsNullOrWhiteSpace(layer))
+            string currentLayer = GetLayerName(doc, obj) ?? inheritedLayer;
+            if (!string.IsNullOrWhiteSpace(currentLayer))
             {
-                layerNames.Add(layer);
+                layerNames.Add(currentLayer);
             }
 
             GeometryInstance gi = obj as GeometryInstance;
@@ -408,24 +496,39 @@ namespace MYREVITPLUGIN
             }
 
             GeometryElement symbolGeo = gi.GetSymbolGeometry();
-            if (symbolGeo == null)
+            if (symbolGeo != null)
             {
-                return;
+                foreach (GeometryObject nested in symbolGeo)
+                {
+                    CollectLayerNamesRecursive(doc, nested, layerNames, currentLayer);
+                }
             }
 
-            foreach (GeometryObject nested in symbolGeo)
+            GeometryElement instanceGeo = gi.GetInstanceGeometry();
+            if (instanceGeo != null)
             {
-                CollectLayerNamesRecursive(doc, nested, layerNames);
+                foreach (GeometryObject nested in instanceGeo)
+                {
+                    CollectLayerNamesRecursive(doc, nested, layerNames, currentLayer);
+                }
             }
         }
 
-        private static IEnumerable<PolyLine> CollectPolylinesFromGeometry(Document doc, GeometryObject obj, string targetLayer)
+        private static IEnumerable<PolylineWithLayer> CollectPolylinesFromGeometry(Document doc, GeometryObject obj, string targetLayer, string inheritedLayer)
         {
-            var result = new List<PolyLine>();
+            var result = new List<PolylineWithLayer>();
+            string currentLayer = GetLayerName(doc, obj) ?? inheritedLayer;
 
-            if (obj is PolyLine pl && IsObjectOnLayer(doc, pl, targetLayer))
+            if (obj is PolyLine pl && !string.IsNullOrWhiteSpace(currentLayer))
             {
-                result.Add(pl);
+                if (string.IsNullOrWhiteSpace(targetLayer) || currentLayer.Equals(targetLayer, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(new PolylineWithLayer
+                    {
+                        Polyline = pl,
+                        Layer = currentLayer
+                    });
+                }
             }
 
             GeometryInstance gi = obj as GeometryInstance;
@@ -436,7 +539,16 @@ namespace MYREVITPLUGIN
                 {
                     foreach (GeometryObject nested in symbolGeo)
                     {
-                        result.AddRange(CollectPolylinesFromGeometry(doc, nested, targetLayer));
+                        result.AddRange(CollectPolylinesFromGeometry(doc, nested, targetLayer, currentLayer));
+                    }
+                }
+
+                GeometryElement instanceGeo = gi.GetInstanceGeometry();
+                if (instanceGeo != null)
+                {
+                    foreach (GeometryObject nested in instanceGeo)
+                    {
+                        result.AddRange(CollectPolylinesFromGeometry(doc, nested, targetLayer, currentLayer));
                     }
                 }
             }
@@ -454,27 +566,51 @@ namespace MYREVITPLUGIN
 
             var transformed = points
                 .Select(p => importTransform.OfPoint(p))
-                .Select(p => new XYZ(p.X, p.Y, p.Z - LoteHeightFeet))
                 .ToList();
 
-            XYZ first = transformed.First();
-            XYZ last = transformed.Last();
-            if (!first.IsAlmostEqualTo(last))
+            if (transformed.Count < 3)
             {
-                transformed.Add(first);
+                return null;
             }
 
-            if (transformed.Count < 4)
+            // Fuerza coplanaridad en Z para evitar fallos de extrusión por pequeñas variaciones del DWG.
+            double baseZ = transformed.Min(p => p.Z) - LoteHeightFeet;
+            var flattened = transformed
+                .Select(p => new XYZ(p.X, p.Y, baseZ))
+                .ToList();
+
+            var cleaned = new List<XYZ>();
+            foreach (XYZ p in flattened)
+            {
+                if (cleaned.Count == 0 || cleaned[cleaned.Count - 1].DistanceTo(p) > 1e-6)
+                {
+                    cleaned.Add(p);
+                }
+            }
+
+            if (cleaned.Count < 3)
+            {
+                return null;
+            }
+
+            XYZ first = cleaned.First();
+            XYZ last = cleaned.Last();
+            if (!first.IsAlmostEqualTo(last))
+            {
+                cleaned.Add(first);
+            }
+
+            if (cleaned.Count < 4)
             {
                 return null;
             }
 
             CurveLoop loop = new CurveLoop();
-            for (int i = 0; i < transformed.Count - 1; i++)
+            for (int i = 0; i < cleaned.Count - 1; i++)
             {
-                XYZ p1 = transformed[i];
-                XYZ p2 = transformed[i + 1];
-                if (p1.DistanceTo(p2) < 1e-7)
+                XYZ p1 = cleaned[i];
+                XYZ p2 = cleaned[i + 1];
+                if (p1.DistanceTo(p2) < 1e-6)
                 {
                     continue;
                 }
@@ -483,12 +619,6 @@ namespace MYREVITPLUGIN
             }
 
             return loop;
-        }
-
-        private static bool IsObjectOnLayer(Document doc, GeometryObject obj, string targetLayer)
-        {
-            string layer = GetLayerName(doc, obj);
-            return !string.IsNullOrWhiteSpace(layer) && layer.Equals(targetLayer, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string GetLayerName(Document doc, GeometryObject obj)
@@ -502,9 +632,40 @@ namespace MYREVITPLUGIN
             return style?.GraphicsStyleCategory?.Name;
         }
 
-        private static string GetDwgAbsolutePath(ImportInstance import)
+        private static string GetDwgAbsolutePath(Document doc, ImportInstance import)
         {
-            ExternalFileReference extRef = import.GetExternalFileReference();
+            if (doc == null || import == null)
+            {
+                return null;
+            }
+
+            ExternalFileReference extRef = null;
+
+            try
+            {
+                extRef = import.GetExternalFileReference();
+            }
+            catch
+            {
+                // Algunos ImportInstance no exponen referencia externa directa.
+            }
+
+            if (extRef == null)
+            {
+                ElementId typeId = import.GetTypeId();
+                if (typeId != ElementId.InvalidElementId)
+                {
+                    try
+                    {
+                        extRef = ExternalFileUtils.GetExternalFileReference(doc, typeId);
+                    }
+                    catch
+                    {
+                        // Puede no existir referencia externa para el typeId.
+                    }
+                }
+            }
+
             if (extRef == null)
             {
                 return null;
@@ -713,14 +874,19 @@ namespace MYREVITPLUGIN
 
         private static void EnsureProjectParameterIdLote(Document doc)
         {
-            if (ProjectParameterExists(doc, ProjectParameterName))
+            EnsureProjectParameter(doc, ProjectParameterName);
+        }
+
+        private static void EnsureProjectParameter(Document doc, string parameterName)
+        {
+            if (ProjectParameterExists(doc, parameterName))
             {
                 return;
             }
 
             Application app = doc.Application;
             string originalSpPath = app.SharedParametersFilename;
-            string tempSpPath = Path.Combine(Path.GetTempPath(), "MYREVITPLUGIN_ID_LOTE.txt");
+            string tempSpPath = Path.Combine(Path.GetTempPath(), "MYREVITPLUGIN_SHARED_PARAMS.txt");
 
             if (!File.Exists(tempSpPath))
             {
@@ -739,8 +905,8 @@ namespace MYREVITPLUGIN
 
                 DefinitionGroup group = defFile.Groups.get_Item("MYREVITPLUGIN") ?? defFile.Groups.Create("MYREVITPLUGIN");
 
-                ExternalDefinitionCreationOptions options = new ExternalDefinitionCreationOptions(ProjectParameterName, SpecTypeId.String.Text);
-                Definition definition = group.Definitions.get_Item(ProjectParameterName) ?? group.Definitions.Create(options);
+                ExternalDefinitionCreationOptions options = new ExternalDefinitionCreationOptions(parameterName, SpecTypeId.String.Text);
+                Definition definition = group.Definitions.get_Item(parameterName) ?? group.Definitions.Create(options);
 
                 CategorySet categorySet = app.Create.NewCategorySet();
                 Categories categories = doc.Settings.Categories;
@@ -757,7 +923,7 @@ namespace MYREVITPLUGIN
 
                 if (categorySet.IsEmpty)
                 {
-                    throw new InvalidOperationException("No hay categorías válidas para aplicar el parámetro ID-Lote.");
+                    throw new InvalidOperationException("No hay categorías válidas para aplicar el parámetro de loteo.");
                 }
 
                 InstanceBinding binding = app.Create.NewInstanceBinding(categorySet);
@@ -801,6 +967,12 @@ namespace MYREVITPLUGIN
         {
             public string Value { get; set; }
             public XYZ Point { get; set; }
+        }
+
+        private class PolylineWithLayer
+        {
+            public PolyLine Polyline { get; set; }
+            public string Layer { get; set; }
         }
     }
 }
