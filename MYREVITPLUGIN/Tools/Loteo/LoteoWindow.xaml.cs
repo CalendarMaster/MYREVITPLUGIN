@@ -24,10 +24,13 @@ namespace MYREVITPLUGIN
         private GroupBox _groupPaso2;
         private TextBlock _lblPaso2Info;
         private TextBlock _lblPaso2Resultado;
+        private TextBlock _lblDwgModo;
+        private Button _btnBuscarDwg;
 
         // Diagnóstico técnico
         private Button _btnDiagnostico;
         private string _lastDiagnosticInfo;
+        private string _manualDwgPath;
 
         // Paso 3
         private GroupBox _groupPaso3;
@@ -116,9 +119,21 @@ namespace MYREVITPLUGIN
             };
             paso2Panel.Children.Add(_lblPaso2Info);
 
+            _btnBuscarDwg = MakeSmallButton("Buscar DWG");
+            _btnBuscarDwg.Click += BtnBuscarDwg_Click;
+            paso2Panel.Children.Add(_btnBuscarDwg);
+
             var btnPaso2 = MakeButton("Ejecutar Paso 2");
             btnPaso2.Click += BtnPaso2_Click;
             paso2Panel.Children.Add(btnPaso2);
+
+            _lblDwgModo = new TextBlock
+            {
+                Text = "Paso 2 usará: Lectura automática de textos desde Revit",
+                Foreground = Brushes.White,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            paso2Panel.Children.Add(_lblDwgModo);
 
             _lblPaso2Resultado = new TextBlock
             {
@@ -185,7 +200,7 @@ namespace MYREVITPLUGIN
                 Reference selectedRef = uidoc.Selection.PickObject(
                     Autodesk.Revit.UI.Selection.ObjectType.Element,
                     new DwgLinkSelectionFilter(uidoc.Document),
-                    "Seleccione un DWG linkeado");
+                    "Seleccione un DWG (vinculado o importado)");
 
                 ImportInstance instance = uidoc.Document.GetElement(selectedRef) as ImportInstance;
                 if (instance == null) { ShowError("La selección no es un DWG válido."); return; }
@@ -197,7 +212,10 @@ namespace MYREVITPLUGIN
                 _cmbCapaTextos.ItemsSource = layers;
                 if (layers.Count > 0) { _cmbCapaLimites.SelectedIndex = 0; _cmbCapaTextos.SelectedIndex = 0; }
 
-                _lblDwgSeleccionado.Content = "DWG: " + (instance.Name ?? instance.Id.IntegerValue.ToString());
+                string dwgType = instance.IsLinked ? "vinculado" : "importado";
+                _lblDwgSeleccionado.Content = $"DWG {dwgType}: {instance.Name ?? instance.Id.IntegerValue.ToString()}";
+                _lblDwgModo.Text = "Paso 2 usará: Lectura automática de textos desde Revit";
+                _manualDwgPath = null;
                 _lastDiagnosticInfo = string.Empty;
                 _btnDiagnostico.IsEnabled = false;
             }
@@ -222,7 +240,30 @@ namespace MYREVITPLUGIN
             ClearError();
             _handler.Request = LoteoRequestType.Step2NameLots;
             _handler.TextLayer = _cmbCapaTextos.SelectedItem?.ToString();
+            _handler.ManualDwgPath = _manualDwgPath;
+            _handler.PreferManualDwgPath = !string.IsNullOrWhiteSpace(_manualDwgPath);
             _externalEvent.Raise();
+        }
+
+        private void BtnBuscarDwg_Click(object sender, RoutedEventArgs e)
+        {
+            Microsoft.Win32.OpenFileDialog dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "CAD files (*.dwg;*.dxf)|*.dwg;*.dxf|DWG files (*.dwg)|*.dwg|DXF files (*.dxf)|*.dxf|All files (*.*)|*.*",
+                Title = "Seleccionar DWG/DXF para Paso 2"
+            };
+
+            bool? ok = dialog.ShowDialog();
+            if (ok == true)
+            {
+                _manualDwgPath = dialog.FileName;
+                string ext = System.IO.Path.GetExtension(_manualDwgPath).ToUpperInvariant();
+                string fileType = ext == ".DXF" ? "DXF" : "DWG";
+                _lblDwgModo.Text = $"Paso 2 usará: Archivo {fileType} manual";
+                _lblDwgSeleccionado.Content = $"Archivo {fileType} para Paso 2: " + System.IO.Path.GetFileName(_manualDwgPath);
+                _lastDiagnosticInfo = string.Empty;
+                _btnDiagnostico.IsEnabled = false;
+            }
         }
 
         private void BtnPaso3_Click(object sender, RoutedEventArgs e)
@@ -283,8 +324,17 @@ namespace MYREVITPLUGIN
 
         public void OnStep2Completed(LoteoStepResult result)
         {
-            if (!result.Success) { ShowError(result.Message); return; }
+            if (!result.Success)
+            {
+                ShowError(result.Message);
+                _lastDiagnosticInfo = result.DiagnosticInfo;
+                _btnDiagnostico.IsEnabled = !string.IsNullOrWhiteSpace(_lastDiagnosticInfo);
+                return;
+            }
+
             _lblPaso2Resultado.Text = "Resultado: " + result.NamedCount + " lotes nombrados de " + result.TotalCount;
+            _lastDiagnosticInfo = result.DiagnosticInfo;
+            _btnDiagnostico.IsEnabled = !string.IsNullOrWhiteSpace(_lastDiagnosticInfo);
             _groupPaso3.IsEnabled = true;
         }
 

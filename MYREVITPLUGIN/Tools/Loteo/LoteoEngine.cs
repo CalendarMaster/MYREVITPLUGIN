@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 
 namespace MYREVITPLUGIN
 {
@@ -42,6 +43,8 @@ namespace MYREVITPLUGIN
         public LoteoRequestType Request { get; set; }
         public string LimitsLayer { get; set; }
         public string TextLayer { get; set; }
+        public string ManualDwgPath { get; set; }
+        public bool PreferManualDwgPath { get; set; }
         public bool CreateParameterIfMissing { get; set; } = true;
 
         public void SetWindow(LoteoWindow window)
@@ -63,7 +66,7 @@ namespace MYREVITPLUGIN
                         break;
 
                     case LoteoRequestType.Step2NameLots:
-                        result = _engine.ExecuteStep2(app, TextLayer);
+                        result = _engine.ExecuteStep2(app, TextLayer, ManualDwgPath, PreferManualDwgPath);
                         _window?.Dispatcher.Invoke(() => _window.OnStep2Completed(result));
                         break;
 
@@ -105,7 +108,8 @@ namespace MYREVITPLUGIN
         public bool AllowElement(Element elem)
         {
             ImportInstance ii = elem as ImportInstance;
-            return ii != null && ii.IsLinked;
+            // Allow BOTH linked AND imported DWG instances
+            return ii != null;
         }
 
         public bool AllowReference(Reference reference, XYZ position)
@@ -164,7 +168,7 @@ namespace MYREVITPLUGIN
             }
 
             ImportInstance import = doc.GetElement(SelectedImportId) as ImportInstance;
-            if (import == null || !import.IsLinked)
+            if (import == null)
             {
                 return Fail("El DWG seleccionado no es válido o ya no existe.");
             }
@@ -180,6 +184,7 @@ namespace MYREVITPLUGIN
                 return Fail("No se pudo leer la geometría del DWG linkeado.");
             }
 
+            // Usar el transform del ImportInstance para crear los lotes en la misma ubicación
             Transform transform = import.GetTransform();
 
             int created = 0;
@@ -213,7 +218,12 @@ namespace MYREVITPLUGIN
             {
                 tx.Start();
 
+                // Limpiar lotes DirectShape existentes creados por esta herramienta
+                DeleteExistingLotDirectShapes(doc);
+
+                // Crear ambos parámetros necesarios para el flujo completo
                 EnsureProjectParameter(doc, LotNameParameterName);
+                EnsureProjectParameterIdLote(doc);
 
                 foreach (var item in allPolylines)
                 {
@@ -300,7 +310,7 @@ namespace MYREVITPLUGIN
             };
         }
 
-        public LoteoStepResult ExecuteStep2(UIApplication uiapp, string textLayer)
+        public LoteoStepResult ExecuteStep2(UIApplication uiapp, string textLayer, string manualDwgPath = null, bool preferManualDwgPath = false)
         {
             UIDocument uidoc = uiapp.ActiveUIDocument;
             Document doc = uidoc.Document;
@@ -321,27 +331,109 @@ namespace MYREVITPLUGIN
                 return Fail("No se encontró el DWG seleccionado.");
             }
 
-            string dwgPath = GetDwgAbsolutePath(doc, import);
-            if (string.IsNullOrWhiteSpace(dwgPath) || !File.Exists(dwgPath))
+            Transform transform = import.GetTransform();
+            string textDiagnostics;
+            List<CadTextPoint> cadTexts;
+
+            // NUEVA ESTRATEGIA: Leer textos directamente del ImportInstance en Revit
+            // Esto evita todos los problemas de transformación de coordenadas
+
+            // Primero, intentamos usar el DXF manual si está disponible
+            if (preferManualDwgPath && !string.IsNullOrWhiteSpace(manualDwgPath) && File.Exists(manualDwgPath))
             {
-                return Fail("No se pudo obtener la ruta del DWG original en disco.");
+                string ext = Path.GetExtension(manualDwgPath).ToUpperInvariant();
+                if (ext == ".DXF")
+                {
+                    // Calcular el offset entre el DXF y el ImportInstance
+                    cadTexts = ReadDxfTextsWithAutoCalibration(doc, import, manualDwgPath, textLayer, out textDiagnostics);
+                }
+                else
+                {
+                    // Fallback al método antiguo
+                    cadTexts = ReadTextsFromImportInstance(doc, import, textLayer, out textDiagnostics);
+                }
+            }
+            else
+            {
+                // Sin DXF manual, intentar leer del import (probablemente fallará)
+                cadTexts = ReadTextsFromImportInstance(doc, import, textLayer, out textDiagnostics);
             }
 
-            Transform transform = import.GetTransform();
-            var cadTexts = ReadDwgTexts(dwgPath, textLayer, transform);
+            /* CÓDIGO ANTIGUO COMENTADO - usar DXF externo causaba problemas de coordenadas
+            if (preferManualDwgPath && !string.IsNullOrWhiteSpace(manualDwgPath) && File.Exists(manualDwgPath))
+            {
+                string ext = Path.GetExtension(manualDwgPath).ToUpperInvariant();
+                if (ext == ".DXF")
+                {
+                    cadTexts = ReadDxfTexts(manualDwgPath, textLayer, transform, out textDiagnostics);
+                }
+                else
+                {
+                    cadTexts = ReadDwgTexts(doc, import, textLayer, transform, out textDiagnostics);
+                }
+            }
+            else
+            {
+                cadTexts = ReadDwgTexts(doc, import, textLayer, transform, out textDiagnostics);
+            }
+            */
+
             if (cadTexts.Count == 0)
             {
-                return Fail("No se encontraron textos en la capa seleccionada del DWG.");
+                return Fail("No se encontraron textos en la capa seleccionada. " + textDiagnostics);
             }
 
             int named = 0;
+            var debugInfo = new StringBuilder();
 
             using (Transaction tx = new Transaction(doc, "Paso 2 - Nombrar lotes"))
             {
                 tx.Start();
 
+                debugInfo.AppendLine($"Intentando nombrar {_lotNamesByDirectShape.Count} lotes con {cadTexts.Count} textos...");
+
+                // Diagnóstico: mostrar el bounding box del primer lote
+                if (_lotNamesByDirectShape.Count > 0)
+                {
+                    var firstPair = _lotNamesByDirectShape.First();
+                    DirectShape firstDs = doc.GetElement(firstPair.Key) as DirectShape;
+                    if (firstDs != null)
+                    {
+                        Solid firstSolid = GetDirectShapeSolid(firstDs);
+                        if (firstSolid != null)
+                        {
+                            var bbox = firstSolid.GetBoundingBox();
+                            debugInfo.AppendLine($"[Ejemplo] Lote ID {firstDs.Id.IntegerValue} BBox: Min({bbox.Min.X:F2}, {bbox.Min.Y:F2}, {bbox.Min.Z:F2}) Max({bbox.Max.X:F2}, {bbox.Max.Y:F2}, {bbox.Max.Z:F2})");
+
+                            // Mostrar coordenadas de vértices reales del sólido
+                            foreach (Face face in firstSolid.Faces)
+                            {
+                                EdgeArrayArray edgeLoops = face.EdgeLoops;
+                                if (edgeLoops == null || edgeLoops.Size == 0) continue;
+
+                                foreach (EdgeArray edgeLoop in edgeLoops)
+                                {
+                                    if (edgeLoop == null || edgeLoop.Size == 0) continue;
+
+                                    Edge firstEdge = edgeLoop.get_Item(0);
+                                    if (firstEdge != null)
+                                    {
+                                        XYZ p1 = firstEdge.Evaluate(0);
+                                        debugInfo.AppendLine($"[Coord. Real] Vértice ejemplo del lote: ({p1.X:F2}, {p1.Y:F2}, {p1.Z:F2})");
+                                        break;
+                                    }
+                                }
+                                break; // Solo mostrar la primera cara
+                            }
+                        }
+                    }
+                }
+
                 foreach (var textItem in cadTexts)
                 {
+                    debugInfo.AppendLine($"Texto '{textItem.Value}' en posición ({textItem.Point.X:F2}, {textItem.Point.Y:F2}, {textItem.Point.Z:F2})");
+
+                    bool foundMatch = false;
                     foreach (var pair in _lotNamesByDirectShape.ToList())
                     {
                         DirectShape ds = doc.GetElement(pair.Key) as DirectShape;
@@ -360,28 +452,46 @@ namespace MYREVITPLUGIN
                         {
                             ds.Name = textItem.Value;
 
+                            // Asignar NOMBRE_LOTE
                             Parameter loteNameParam = ds.LookupParameter(LotNameParameterName);
                             if (loteNameParam != null && !loteNameParam.IsReadOnly)
                             {
                                 loteNameParam.Set(textItem.Value);
                             }
 
+                            // Asignar ID-Lote también al DirectShape
+                            Parameter idLoteParam = ds.LookupParameter(ProjectParameterName);
+                            if (idLoteParam != null && !idLoteParam.IsReadOnly)
+                            {
+                                idLoteParam.Set(textItem.Value);
+                            }
+
                             _lotNamesByDirectShape[pair.Key] = textItem.Value;
                             named++;
+                            foundMatch = true;
+                            debugInfo.AppendLine($"  ✓ Asignado a DirectShape ID {ds.Id.IntegerValue}");
                             break;
                         }
+                    }
+
+                    if (!foundMatch)
+                    {
+                        debugInfo.AppendLine($"  ✗ No se encontró lote contenedor");
                     }
                 }
 
                 tx.Commit();
             }
 
+            textDiagnostics += Environment.NewLine + Environment.NewLine + debugInfo.ToString();
+
             return new LoteoStepResult
             {
                 Success = true,
                 Message = "Paso 2 completado.",
                 TotalCount = _lotNamesByDirectShape.Count,
-                NamedCount = named
+                NamedCount = named,
+                DiagnosticInfo = textDiagnostics
             };
         }
 
@@ -680,87 +790,456 @@ namespace MYREVITPLUGIN
             return ModelPathUtils.ConvertModelPathToUserVisiblePath(path);
         }
 
-        private static List<CadTextPoint> ReadDwgTexts(string dwgPath, string textLayer, Transform importTransform)
+        private List<CadTextPoint> ReadTextsFromImportInstance(Document doc, ImportInstance import, string textLayer, out string diagnostics)
+        {
+            // NOTA: Revit NO expone el texto real de los elementos CAD importados
+            // Debemos usar el archivo DXF externo, pero necesitamos calcular la transformación correcta
+
+            // Por ahora, redirigimos al método ReadDxfTexts con transformación automática
+            diagnostics = "ERROR: Se requiere un archivo DXF manual para leer los textos.";
+            return new List<CadTextPoint>();
+        }
+
+        private List<CadTextPoint> ReadDxfTextsWithAutoCalibration(Document doc, ImportInstance import, string dxfPath, string textLayer, out string diagnostics)
         {
             var result = new List<CadTextPoint>();
+            var diag = new StringBuilder();
 
+            diag.AppendLine("[Diagnóstico técnico - Paso 2 - Lectura DXF con transform del import]");
+            diag.AppendLine("Archivo: " + Path.GetFileName(dxfPath));
+            diag.AppendLine("Capa solicitada: " + textLayer);
+
+            // Obtener el transform del ImportInstance (el mismo que usó Step 1)
+            Transform importTransform = import.GetTransform();
+            diag.AppendLine($"Transform del import: Origin=({importTransform.Origin.X:F2}, {importTransform.Origin.Y:F2}, {importTransform.Origin.Z:F2})");
+
+            // Leer el DXF
+            netDxf.DxfDocument dxfDoc = null;
             try
             {
-                Type dxfDocType = Type.GetType("netDxf.DxfDocument, netDxf");
-                if (dxfDocType == null)
-                {
-                    return result;
-                }
-
-                MethodInfo loadMethod = dxfDocType.GetMethod("Load", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
-                object dxfDoc = loadMethod?.Invoke(null, new object[] { dwgPath });
-                if (dxfDoc == null)
-                {
-                    return result;
-                }
-
-                ExtractCadTexts(dxfDoc, "Texts", textLayer, importTransform, result);
-                ExtractCadTexts(dxfDoc, "MTexts", textLayer, importTransform, result);
+                dxfDoc = netDxf.DxfDocument.Load(dxfPath);
             }
-            catch
+            catch (Exception ex)
             {
+                diag.AppendLine($"ERROR al cargar DXF: {ex.Message}");
+                diagnostics = diag.ToString();
                 return result;
             }
 
+            if (dxfDoc == null)
+            {
+                diag.AppendLine("ERROR: No se pudo cargar el archivo DXF.");
+                diagnostics = diag.ToString();
+                return result;
+            }
+
+            diag.AppendLine($"DXF cargado exitosamente. Versión: {dxfDoc.DrawingVariables.AcadVer}");
+
+            // Determinar factor de conversión según las unidades del DXF
+            double conversionFactor = 1.0;
+            string unitsInfo = "Desconocidas";
+
+            if (dxfDoc.DrawingVariables.InsUnits == netDxf.Units.DrawingUnits.Centimeters)
+            {
+                conversionFactor = 1.0 / 30.48; // cm a pies
+                unitsInfo = "Centímetros";
+            }
+            else if (dxfDoc.DrawingVariables.InsUnits == netDxf.Units.DrawingUnits.Millimeters)
+            {
+                conversionFactor = 1.0 / 304.8; // mm a pies
+                unitsInfo = "Milímetros";
+            }
+            else if (dxfDoc.DrawingVariables.InsUnits == netDxf.Units.DrawingUnits.Meters)
+            {
+                conversionFactor = 1.0 / 0.3048; // m a pies
+                unitsInfo = "Metros";
+            }
+            else if (dxfDoc.DrawingVariables.InsUnits == netDxf.Units.DrawingUnits.Inches)
+            {
+                conversionFactor = 1.0 / 12.0; // pulgadas a pies
+                unitsInfo = "Pulgadas";
+            }
+            else if (dxfDoc.DrawingVariables.InsUnits == netDxf.Units.DrawingUnits.Feet)
+            {
+                conversionFactor = 1.0; // ya está en pies
+                unitsInfo = "Pies";
+            }
+
+            diag.AppendLine($"Unidades del DXF: {unitsInfo} (factor conversión: {conversionFactor:F6})");
+
+            // Leer textos y aplicar el mismo transform que Step 1
+            int totalTextsFound = 0;
+            int textsInLayer = 0;
+            var textsByLayer = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            // Debug: mostrar primera posición SIN transformar
+            bool firstTextShown = false;
+
+            if (dxfDoc.Entities != null && dxfDoc.Entities.Texts != null)
+            {
+                foreach (netDxf.Entities.Text text in dxfDoc.Entities.Texts)
+                {
+                    totalTextsFound++;
+
+                    string layer = text.Layer?.Name ?? "0";
+                    if (!textsByLayer.ContainsKey(layer))
+                    {
+                        textsByLayer[layer] = 0;
+                    }
+                    textsByLayer[layer]++;
+
+                    if (string.IsNullOrWhiteSpace(textLayer) || layer.Equals(textLayer, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Debug: mostrar primera posición cruda del DXF
+                        if (!firstTextShown)
+                        {
+                            diag.AppendLine($"[Debug] Primera posición DXF cruda: ({text.Position.X:F2}, {text.Position.Y:F2}, {text.Position.Z:F2})");
+                            firstTextShown = true;
+                        }
+
+                        // Convertir de unidades DXF a pies
+                        XYZ dxfPosition = new XYZ(
+                            text.Position.X * conversionFactor,
+                            text.Position.Y * conversionFactor,
+                            text.Position.Z * conversionFactor
+                        );
+
+                        // Aplicar el transform del import (igual que Step 1)
+                        XYZ transformedPosition = importTransform.OfPoint(dxfPosition);
+
+                        result.Add(new CadTextPoint
+                        {
+                            Value = text.Value?.Trim(),
+                            Point = transformedPosition
+                        });
+
+                        textsInLayer++;
+                    }
+                }
+            }
+
+            if (dxfDoc.Entities != null && dxfDoc.Entities.MTexts != null)
+            {
+                foreach (netDxf.Entities.MText mtext in dxfDoc.Entities.MTexts)
+                {
+                    totalTextsFound++;
+
+                    string layer = mtext.Layer?.Name ?? "0";
+                    if (!textsByLayer.ContainsKey(layer))
+                    {
+                        textsByLayer[layer] = 0;
+                    }
+                    textsByLayer[layer]++;
+
+                    if (string.IsNullOrWhiteSpace(textLayer) || layer.Equals(textLayer, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Convertir de unidades DXF a pies
+                        XYZ dxfPosition = new XYZ(
+                            mtext.Position.X * conversionFactor,
+                            mtext.Position.Y * conversionFactor,
+                            mtext.Position.Z * conversionFactor
+                        );
+
+                        // Aplicar el transform del import (igual que Step 1)
+                        XYZ transformedPosition = importTransform.OfPoint(dxfPosition);
+
+                        result.Add(new CadTextPoint
+                        {
+                            Value = mtext.Value?.Trim(),
+                            Point = transformedPosition
+                        });
+
+                        textsInLayer++;
+                    }
+                }
+            }
+
+            var orderedLayers = textsByLayer
+                .OrderByDescending(x => x.Value)
+                .ThenBy(x => x.Key)
+                .ToList();
+
+            string layerDetail = orderedLayers.Count == 0
+                ? "(sin capas detectadas con textos)"
+                : string.Join(Environment.NewLine, orderedLayers.Select(x => "  - " + x.Key + ": " + x.Value));
+
+            diag.AppendLine($"Total de textos en DXF: {totalTextsFound}");
+            diag.AppendLine($"Textos en capa '{textLayer}': {textsInLayer}");
+            diag.AppendLine("");
+            diag.AppendLine("Textos detectados por capa:");
+            diag.AppendLine(layerDetail);
+
+            diagnostics = diag.ToString();
             return result;
         }
 
-        private static void ExtractCadTexts(object dxfDoc, string collectionPropertyName, string textLayer, Transform importTransform, List<CadTextPoint> result)
+        private List<CadTextPoint> ReadDwgTexts(Document doc, ImportInstance import, string textLayer, Transform importTransform, out string diagnostics)
         {
-            PropertyInfo collectionProperty = dxfDoc.GetType().GetProperty(collectionPropertyName, BindingFlags.Public | BindingFlags.Instance);
-            IEnumerable collection = collectionProperty?.GetValue(dxfDoc) as IEnumerable;
-            if (collection == null)
+            var result = new List<CadTextPoint>();
+            var diag = new StringBuilder();
+
+            diag.AppendLine("[Diagnóstico técnico - Paso 2]");
+            diag.AppendLine("Método: Lectura de textos desde Revit");
+            diag.AppendLine("Capa solicitada: " + textLayer);
+            diag.AppendLine("DWG tipo: " + (import.IsLinked ? "Vinculado" : "Importado"));
+
+            int totalTextsFound = 0;
+            int textsInLayer = 0;
+            int textsNearImport = 0;
+            var textsByLayer = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                // Get bounding box of the import to search for nearby texts
+                BoundingBoxXYZ importBbox = import.get_BoundingBox(null);
+
+                // Strategy 1: Find ALL TextNote elements in the document
+                FilteredElementCollector allTextsCollector = new FilteredElementCollector(doc)
+                    .OfClass(typeof(TextNote));
+
+                diag.AppendLine($"Total TextNotes en documento: {allTextsCollector.GetElementCount()}");
+
+                foreach (TextNote textNote in allTextsCollector)
+                {
+                    string textValue = textNote.Text;
+                    if (string.IsNullOrWhiteSpace(textValue))
+                    {
+                        continue;
+                    }
+
+                    XYZ textPosition = textNote.Coord;
+
+                    // Check if text is near the import (expanded bounding box)
+                    bool isNearImport = true;
+                    if (importBbox != null)
+                    {
+                        double margin = 50.0; // 50 feet margin
+                        XYZ expandedMin = importBbox.Min - new XYZ(margin, margin, margin);
+                        XYZ expandedMax = importBbox.Max + new XYZ(margin, margin, margin);
+
+                        isNearImport = textPosition.X >= expandedMin.X && textPosition.X <= expandedMax.X &&
+                                      textPosition.Y >= expandedMin.Y && textPosition.Y <= expandedMax.Y;
+                    }
+
+                    if (!isNearImport)
+                    {
+                        continue;
+                    }
+
+                    textsNearImport++;
+
+                    // Try to get layer info from the text note
+                    string layer = TryGetLayerFromElement(doc, textNote);
+
+                    totalTextsFound++;
+
+                    if (!textsByLayer.ContainsKey(layer ?? "Unknown"))
+                    {
+                        textsByLayer[layer ?? "Unknown"] = 0;
+                    }
+                    textsByLayer[layer ?? "Unknown"]++;
+
+                    if (string.IsNullOrWhiteSpace(textLayer) ||
+                        (layer != null && layer.Equals(textLayer, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        result.Add(new CadTextPoint
+                        {
+                            Value = textValue.Trim(),
+                            Point = textPosition
+                        });
+
+                        textsInLayer++;
+                    }
+                }
+
+                // Strategy 2: If no TextNotes found, try parsing geometry
+                if (result.Count == 0 && import != null)
+                {
+                    diag.AppendLine("No se encontraron TextNotes. Intentando parsear geometría del DWG...");
+
+                    Options options = new Options
+                    {
+                        IncludeNonVisibleObjects = true,
+                        DetailLevel = ViewDetailLevel.Fine
+                    };
+
+                    GeometryElement geo = import.get_Geometry(options);
+                    if (geo != null)
+                    {
+                        CollectTextsFromGeometry(doc, geo, textLayer, importTransform, result, textsByLayer, ref totalTextsFound, ref textsInLayer);
+                    }
+                }
+
+                var orderedLayers = textsByLayer
+                    .OrderByDescending(x => x.Value)
+                    .ThenBy(x => x.Key)
+                    .ToList();
+
+                string layerDetail = orderedLayers.Count == 0
+                    ? "(sin capas detectadas con textos)"
+                    : string.Join(Environment.NewLine, orderedLayers.Select(x => "  - " + x.Key + ": " + x.Value));
+
+                diag.AppendLine($"Textos cerca del DWG: {textsNearImport}");
+                diag.AppendLine($"Total de textos detectados: {totalTextsFound}");
+                diag.AppendLine($"Textos en capa '{textLayer}': {textsInLayer}");
+                diag.AppendLine("");
+                diag.AppendLine("Textos detectados por capa:");
+                diag.AppendLine(layerDetail);
+
+                if (result.Count == 0)
+                {
+                    diag.AppendLine("");
+                    diag.AppendLine("⚠️ ADVERTENCIA: No se detectaron textos.");
+                    diag.AppendLine("");
+                    diag.AppendLine("Posibles causas:");
+                    diag.AppendLine("  1. Los textos están en una capa diferente");
+                    diag.AppendLine("  2. El DWG no fue explotado en Revit");
+                    diag.AppendLine("  3. Los textos son bloques o anotaciones no estándar");
+                    diag.AppendLine("");
+                    diag.AppendLine("SOLUCIONES:");
+                    diag.AppendLine("  → En Revit: Seleccionar DWG → Modify → 'Explode'");
+                    diag.AppendLine("  → Verificar que los textos sean visibles en la vista");
+                    diag.AppendLine("  → Revisar el nombre de la capa en la lista de capas detectadas");
+                }
+            }
+            catch (Exception ex)
+            {
+                diag.AppendLine("");
+                diag.AppendLine("❌ ERROR CRÍTICO: " + ex.Message);
+                diag.AppendLine("Stack: " + ex.StackTrace);
+            }
+
+            diagnostics = diag.ToString();
+            return result;
+        }
+
+        private string TryGetLayerFromElement(Document doc, Element element)
+        {
+            if (element == null)
+            {
+                return null;
+            }
+
+            // Try to get layer from graphics style (only for geometry objects)
+            // TextNote doesn't have GraphicsStyleId, so skip this check
+
+            // Try to get layer from category
+            Category cat = element.Category;
+            if (cat != null)
+            {
+                return cat.Name;
+            }
+
+            // Try to get layer from parameters
+            Parameter layerParam = element.LookupParameter("Layer");
+            if (layerParam != null && layerParam.StorageType == StorageType.String)
+            {
+                string val = layerParam.AsString();
+                if (!string.IsNullOrWhiteSpace(val))
+                {
+                    return val;
+                }
+            }
+
+            return "Unknown";
+        }
+
+        private void CollectTextsFromGeometry(
+            Document doc,
+            GeometryElement geoElement,
+            string targetLayer,
+            Transform importTransform,
+            List<CadTextPoint> result,
+            Dictionary<string, int> textsByLayer,
+            ref int totalTextsFound,
+            ref int textsInLayer)
+        {
+            if (geoElement == null)
             {
                 return;
             }
 
-            foreach (object entity in collection)
+            foreach (GeometryObject obj in geoElement)
             {
-                if (entity == null)
+                CollectTextsFromGeometryObject(doc, obj, targetLayer, importTransform, result, textsByLayer, ref totalTextsFound, ref textsInLayer, null);
+            }
+        }
+
+        private void CollectTextsFromGeometryObject(
+            Document doc,
+            GeometryObject obj,
+            string targetLayer,
+            Transform importTransform,
+            List<CadTextPoint> result,
+            Dictionary<string, int> textsByLayer,
+            ref int totalTextsFound,
+            ref int textsInLayer,
+            string currentLayer)
+        {
+            if (obj == null)
+            {
+                return;
+            }
+
+            string layer = GetLayerName(doc, obj);
+            if (!string.IsNullOrWhiteSpace(layer))
+            {
+                currentLayer = layer;
+            }
+
+            // GeometryInstance represents blocks/symbols in DWG imports
+            GeometryInstance gi = obj as GeometryInstance;
+            if (gi != null)
+            {
+                // Get the family symbol to check if it's a text element
+                // In DWG imports, text often appears as very simple geometry instances
+                GeometryElement symbolGeo = gi.GetSymbolGeometry();
+                GeometryElement instanceGeo = gi.GetInstanceGeometry();
+
+                // Check if this might be a text by examining its geometry complexity
+                // Text elements typically have minimal geometry (often just lines forming characters)
+                bool mightBeText = false;
+                XYZ textPosition = gi.Transform.Origin;
+
+                if (symbolGeo != null)
                 {
-                    continue;
+                    int lineCount = 0;
+                    foreach (GeometryObject symObj in symbolGeo)
+                    {
+                        if (symObj is Line || symObj is PolyLine)
+                        {
+                            lineCount++;
+                        }
+                    }
+
+                    // Text elements usually have multiple small lines forming characters
+                    // This is a heuristic - adjust as needed
+                    if (lineCount > 0 && lineCount < 200)
+                    {
+                        mightBeText = true;
+                    }
                 }
 
-                object layerObj = entity.GetType().GetProperty("Layer", BindingFlags.Public | BindingFlags.Instance)?.GetValue(entity);
-                string layerName = layerObj?.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.GetValue(layerObj) as string;
-                if (string.IsNullOrWhiteSpace(layerName) || !layerName.Equals(textLayer, StringComparison.OrdinalIgnoreCase))
+                // Try to extract text value from the geometry instance
+                // This is challenging because Revit doesn't expose the actual text string
+                // from DWG imports directly. We need an alternative approach.
+
+                // Recurse into nested geometry regardless
+                if (symbolGeo != null)
                 {
-                    continue;
+                    foreach (GeometryObject nested in symbolGeo)
+                    {
+                        CollectTextsFromGeometryObject(doc, nested, targetLayer, importTransform, result, textsByLayer, ref totalTextsFound, ref textsInLayer, currentLayer);
+                    }
                 }
 
-                object positionObj = entity.GetType().GetProperty("Position", BindingFlags.Public | BindingFlags.Instance)?.GetValue(entity)
-                    ?? entity.GetType().GetProperty("InsertionPoint", BindingFlags.Public | BindingFlags.Instance)?.GetValue(entity);
-                if (positionObj == null)
+                if (instanceGeo != null)
                 {
-                    continue;
+                    foreach (GeometryObject nested in instanceGeo)
+                    {
+                        CollectTextsFromGeometryObject(doc, nested, targetLayer, importTransform, result, textsByLayer, ref totalTextsFound, ref textsInLayer, currentLayer);
+                    }
                 }
-
-                double x = Convert.ToDouble(positionObj.GetType().GetProperty("X", BindingFlags.Public | BindingFlags.Instance)?.GetValue(positionObj) ?? 0.0);
-                double y = Convert.ToDouble(positionObj.GetType().GetProperty("Y", BindingFlags.Public | BindingFlags.Instance)?.GetValue(positionObj) ?? 0.0);
-                double z = Convert.ToDouble(positionObj.GetType().GetProperty("Z", BindingFlags.Public | BindingFlags.Instance)?.GetValue(positionObj) ?? 0.0);
-
-                string value = entity.GetType().GetProperty("Value", BindingFlags.Public | BindingFlags.Instance)?.GetValue(entity) as string
-                    ?? entity.GetType().GetProperty("Text", BindingFlags.Public | BindingFlags.Instance)?.GetValue(entity) as string
-                    ?? entity.GetType().GetProperty("PlainText", BindingFlags.Public | BindingFlags.Instance)?.GetValue(entity) as string;
-
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-
-                XYZ cadPoint = new XYZ(x, y, z);
-                XYZ modelPoint = importTransform.OfPoint(cadPoint);
-
-                result.Add(new CadTextPoint
-                {
-                    Value = value,
-                    Point = modelPoint
-                });
             }
         }
 
@@ -834,14 +1313,18 @@ namespace MYREVITPLUGIN
                 return false;
             }
 
+            // Check only X and Y bounds, ignore Z (text may be at different elevation)
             if (point.X < bb.Min.X || point.X > bb.Max.X ||
-                point.Y < bb.Min.Y || point.Y > bb.Max.Y ||
-                point.Z < bb.Min.Z || point.Z > bb.Max.Z)
+                point.Y < bb.Min.Y || point.Y > bb.Max.Y)
             {
                 return false;
             }
 
-            Line ray = Line.CreateBound(point, point + XYZ.BasisX.Multiply(1000000));
+            // Project point to mid-Z of the solid for better 3D matching
+            double midZ = (bb.Min.Z + bb.Max.Z) / 2.0;
+            XYZ testPoint = new XYZ(point.X, point.Y, midZ);
+
+            Line ray = Line.CreateBound(testPoint, testPoint + XYZ.BasisX.Multiply(1000000));
             SolidCurveIntersectionOptions options = new SolidCurveIntersectionOptions();
             SolidCurveIntersection sci = solid.IntersectWithCurve(ray, options);
             return sci != null && sci.SegmentCount % 2 == 1;
@@ -870,6 +1353,31 @@ namespace MYREVITPLUGIN
             }
 
             return (bb.Min + bb.Max) / 2.0;
+        }
+
+        private static void DeleteExistingLotDirectShapes(Document doc)
+        {
+            // Buscar todos los DirectShape en el documento
+            FilteredElementCollector collector = new FilteredElementCollector(doc)
+                .OfClass(typeof(DirectShape));
+
+            List<ElementId> toDelete = new List<ElementId>();
+
+            foreach (DirectShape ds in collector)
+            {
+                // Identificar si es un lote creado por esta herramienta
+                // (tiene el parámetro NOMBRE_LOTE o su nombre contiene "Lote")
+                Parameter nameParam = ds.LookupParameter(LotNameParameterName);
+                if (nameParam != null || ds.Name.Contains("Lote") || ds.Name.Contains("lote"))
+                {
+                    toDelete.Add(ds.Id);
+                }
+            }
+
+            if (toDelete.Count > 0)
+            {
+                doc.Delete(toDelete);
+            }
         }
 
         private static void EnsureProjectParameterIdLote(Document doc)
